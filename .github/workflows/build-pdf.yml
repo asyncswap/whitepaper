@@ -1,0 +1,48 @@
+# Builds whitepaper.pdf from whitepaper.tex on every change and commits it
+# back on dev, so the PDF in the repository always matches the source and
+# nobody needs TeX installed to contribute.
+name: Build PDF
+
+on:
+  push:
+    branches: [dev]
+    paths: ["whitepaper.tex", "ref.bib", ".github/workflows/build-pdf.yml"]
+  pull_request:
+    paths: ["whitepaper.tex", "ref.bib", ".github/workflows/build-pdf.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile with TeX Live (latexmk, pdflatex, bibtex)
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: whitepaper.tex
+          latexmk_use_xelatex: false
+          args: -pdf -interaction=nonstopmode -file-line-error -halt-on-error
+
+      - name: Upload PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: whitepaper
+          path: whitepaper.pdf
+
+      # On dev, keep the committed PDF in step with the source. Pushes made
+      # with GITHUB_TOKEN do not trigger workflows, so this cannot loop.
+      - name: Commit the PDF back
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        run: |
+          if git diff --quiet -- whitepaper.pdf && git ls-files --error-unmatch whitepaper.pdf >/dev/null 2>&1; then
+            echo "whitepaper.pdf unchanged"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add whitepaper.pdf
+          git commit -m "Rebuild whitepaper.pdf from ${GITHUB_SHA::7}"
+          git push

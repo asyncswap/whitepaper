@@ -21,7 +21,7 @@
     urlcolor=blue,
     }
 
-\usepackage{biblatex} %Imports biblatex package
+\usepackage[backend=bibtex]{biblatex} %Imports biblatex package (bibtex backend: builds anywhere, no biber version coupling)
 \addbibresource{ref.bib} %Import the bibliography file
 
 \usepackage{caption}
@@ -162,7 +162,7 @@ Pools using the hook can hold ordinary Uniswap v4 liquidity positions. After ord
 \section{Fillers}
 \label{sec:fillers}
 
-What the book and the pool cannot match can be settled by anyone. A filler calls \texttt{Router.fillOrder(order, maxPrice, data)}, funds the output in the same unlock, and receives the order's full remaining input. The maker's minimum is net: the filler pays gross output
+What the book and the pool cannot match can be settled by anyone. A filler calls the Router's \texttt{fillOrder} with the order, a price cap and the recipient, funds the output in the same unlock, and receives the order's full remaining input. The maker's minimum is net: the filler pays gross output
 \begin{equation}
   \mathit{gross} = \mathit{amountOutMin} + \mathrm{calculatePoolFee}(\mathit{amountOutMin}), \qquad
   \mathrm{calculatePoolFee}(n) = \left\lfloor \frac{3n}{997} \right\rfloor,
