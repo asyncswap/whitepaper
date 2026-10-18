@@ -29,7 +29,7 @@
 
 \urlstyle{same}
 
-\title{ASMM: An Async Swap Market Maker For Uniswap V4 Pools (WIP)}
+\title{AsCSMM: An Async Swap Constant Sum Market Maker For Uniswap V4 Hooks (WIP)}
 
 \author{
   Msaki, Meek\\
@@ -39,41 +39,29 @@
   \texttt{Jli29@gmu.edu}
 }
  
-\date{May 3, 2025}
+\date{May 4, 2025}
 
 \begin{document}
 
 \maketitle
+
+\begin{abstract}
+    We implement an async swap constant-sum market maker that bypasses both the swap logic in Uniswap V4’s constant-product market maker (CPMM) and the concentrated liquidity tick pricing for asset pools, in favor of custom accounting. Our async market maker pauses transactions in the block they are submitted, allowing any user to manually fill the order at a later, non-deterministic time. This implementation removes the need for liquidity providers (LPs), as each async swap order is filled on demand in a peer-to-peer manner.
+\end{abstract}
+
 \section{Introduction}
 
-The Uniswap V4 \cite{UniswapV4} protocol is an automated market maker (AMM) in DeFi. It functions similarly to its predecessor, Uniswap V3 \cite{UniswapV3}, where a constant-product market maker (CPMM) is implemented with the equation \eqref{eq:cp}, and asset prices are calculated using a tick pricing equation \eqref{eq:pr}.  
-\begin{equation}
-\label{eq:cp}
-    xy 
-    =
-    L^2
-\end{equation}
+The Uniswap V4 \cite{UniswapV4} protocol is an automated market maker (AMM) in DeFi. It functions similarly to its predecessor, Uniswap V3 \cite{UniswapV3}, where it features a constant-product market maker (CPMM) whose asset prices are calculated using a tick pricing.  
 
-\begin{equation}
-\label{eq:pr}
-    p(i) 
-    =
-    1.0001^{i}
-\end{equation}
-
-Each pool in Uniswap V4 allows for a Hooks parameter to be added during pool initialization. This Hooks parameter is a contract address that applies custom functionality to swaps, liquidity, and donation actions. It is through this Hooks contract that we modify Uniswap V4's swap and liquidity actions to create an async swap market maker.
-
-\section{Core Idea}
-
-We implement an Async Swap Market Maker (ASMM) that bypasses both the \eqref{eq:cp} swap logic in Uniswap V4’s constant-product market maker (CPMM) and the \eqref{eq:pr} concentrated liquidity tick pricing for asset pools, in favor of custom accounting. Our async market maker pauses transactions in the block they are submitted, allowing any user to manually fill the order at a later, non-deterministic time. This implementation removes the need for liquidity providers (LPs), as each async swap order is filled on demand in a peer-to-peer manner. We demonstrate that block-level MEV attacks can be prevented through async swaps. 
+A key feature of Uniswap V4 is the ability to attach a Hooks contract during pool initialization. This contract enables custom logic to be applied to swaps, liquidity changes, and donations. We leverage this mechanism to override default behaviors and implement an async swap constant-sum market maker (AsCSMM).
 
 \section{Async Swap Hook}
 
 Our Hooks contract implements custom logic in the following hook callbacks:
 
 \begin{itemize}
-\item \texttt{beforeAddLiquidity}
 \item \texttt{beforeSwap}
+\item \texttt{beforeSwapReturnsDelta}
 \end{itemize}
 
 In our \texttt{beforeSwap} function, we first take the user-specified amount from the Pool Manager and emit an async swap order event. We then record a 1:1 claimable amount of the user's asset within our hook contract. Execution is returned to Uniswap V4’s Pool Manager, after which the user, typically interacting through a router, sends the asset they want to swap to the Pool Manager. This transfer settles the delta balance created by our hook. At this point, the async swap is recorded, an async order event has been emitted, and the order is ready to be filled in a future block.
@@ -98,6 +86,6 @@ Currently, our ASMM charges zero fees for both submitting and filling orders.
 
 Our implementation enables permissionless order filling, potentially sparking competition among fillers through arbitrage opportunities created when interacting with intents across other DeFi protocols. While the impact remains uncertain, we welcome technical mentorship to investigate further. We are seeking capital to reach audit readiness, and our future work remains a work in progress (WIP).
 
-\printbibliography %Prints bibliography
+\printbibliography %Prints bibliographys
 
 \end{document}
