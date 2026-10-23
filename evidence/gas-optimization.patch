@@ -1,0 +1,170 @@
+--- a/src/libraries/EligiblePrice.sol
++++ b/src/libraries/EligiblePrice.sol
+@@ -15,17 +15,19 @@
+     }
+ 
+     /// @dev Exact comparison of positive-denominator ratios using two 512-bit products.
+-    function le(Ratio memory a, Ratio memory b) internal pure returns (bool) {
+-        (uint256 ah, uint256 al) = _product(a.numerator, b.denominator);
+-        (uint256 bh, uint256 bl) = _product(b.numerator, a.denominator);
+-        return ah < bh || (ah == bh && al <= bl);
+-    }
+-
+-    function _product(uint256 a, uint256 b) private pure returns (uint256 hi, uint256 lo) {
++    function le(Ratio memory a, Ratio memory b) internal pure returns (bool result) {
+         assembly ("memory-safe") {
+-            let mm := mulmod(a, b, not(0))
+-            lo := mul(a, b)
+-            hi := sub(sub(mm, lo), lt(mm, lo))
++            let an := mload(a)
++            let ad := mload(add(a, 32))
++            let bn := mload(b)
++            let bd := mload(add(b, 32))
++            let al := mul(an, bd)
++            let am := mulmod(an, bd, not(0))
++            let ah := sub(sub(am, al), lt(am, al))
++            let bl := mul(bn, ad)
++            let bm := mulmod(bn, ad, not(0))
++            let bh := sub(sub(bm, bl), lt(bm, bl))
++            result := or(lt(ah, bh), and(eq(ah, bh), iszero(gt(al, bl))))
+         }
+     }
+ 
+@@ -37,11 +39,10 @@
+         bool isBuy
+     ) internal {
+         uint32 leaf = tree.leaves[rank];
+-        // Order admission guarantees a positive denominator. Keep that precondition
+-        // separate from this index operation (which also has isolated storage tests).
+-        assert(leaf != 0);
++        // Internal callers have just inserted rank or are refreshing a live order.
++        // The leaf exists and order admission guarantees a positive denominator.
+         bounds[leaf] = price;
+-        _repair(tree, bounds, tree.nodes[leaf].parent, isBuy);
++        _repair(tree, bounds, tree.nodes[leaf].parent, isBuy, true);
+     }
+ 
+     function remove(RadixPriceTree.Tree storage tree, mapping(uint32 => Ratio) storage bounds, uint128 rank, bool isBuy)
+@@ -51,23 +52,33 @@
+         uint32 parent = tree.nodes[leaf].parent;
+         uint32 grandparent = tree.nodes[parent].parent;
+         tree.remove(rank);
+-        delete bounds[leaf];
+-        if (parent != 0) delete bounds[parent];
++        // Freed summaries are unreachable. Reuse overwrites the leaf and repairs
++        // its new parent unconditionally before allowing an early exit above it.
+         // The promoted sibling's summary is unchanged, including when it becomes the root.
+-        _repair(tree, bounds, grandparent, isBuy);
++        _repair(tree, bounds, grandparent, isBuy, false);
+     }
+ 
+     function _repair(
+         RadixPriceTree.Tree storage tree,
+         mapping(uint32 => Ratio) storage bounds,
+         uint32 cursor,
+-        bool isBuy
++        bool isBuy,
++        bool forceFirst
+     ) private {
+         while (cursor != 0) {
+             RadixPriceTree.Node storage node = tree.nodes[cursor];
+             Ratio memory left = bounds[node.left];
+             Ratio memory right = bounds[node.right];
+-            bounds[cursor] = le(left, right) == isBuy ? right : left;
++            Ratio memory next = le(left, right) == isBuy ? right : left;
++            Ratio storage previous = bounds[cursor];
++            // Only this subtree changed. Once its exact summary is unchanged,
++            // every ancestor sees the same pair of child summaries as before.
++            // On insertion the first branch may be recycled: equal old bytes do
++            // not imply its new ancestors are current. Always propagate past it.
++            if (!forceFirst && previous.numerator == next.numerator && previous.denominator == next.denominator) break;
++            forceFirst = false;
++            previous.numerator = next.numerator;
++            previous.denominator = next.denominator;
+             cursor = node.parent;
+         }
+     }
+--- a/src/libraries/RadixPriceTree.sol
++++ b/src/libraries/RadixPriceTree.sol
+@@ -32,8 +32,8 @@
+     function insert(Tree storage self, uint128 price) internal returns (bool created) {
+         if (self.leaves[price] != 0) return false;
+         uint32 leafId = _newNode(self);
+-        self.nodes[leafId].price = price;
+-        self.nodes[leafId].leaf = true;
++        // Recycled nodes may retain old data. Initialize the entire packed record.
++        self.nodes[leafId] = Node(0, 0, 0, price, 0, true);
+         self.leaves[price] = leafId;
+ 
+         if (self.root == 0) {
+@@ -58,16 +58,9 @@
+         }
+ 
+         uint32 branchId = _newNode(self);
+-        Node storage addedBranch = self.nodes[branchId];
+-        addedBranch.parent = parentId;
+-        addedBranch.bit = splitBit;
+-        if (_bitSet(price, splitBit)) {
+-            addedBranch.left = cursor;
+-            addedBranch.right = leafId;
+-        } else {
+-            addedBranch.left = leafId;
+-            addedBranch.right = cursor;
+-        }
++        bool goesRight = _bitSet(price, splitBit);
++        self.nodes[branchId] =
++            Node(parentId, goesRight ? cursor : leafId, goesRight ? leafId : cursor, 0, splitBit, false);
+         self.nodes[cursor].parent = branchId;
+         self.nodes[leafId].parent = branchId;
+ 
+@@ -135,7 +128,8 @@
+     }
+ 
+     function _freeNode(Tree storage self, uint32 id) private {
+-        delete self.nodes[id];
++        // The node is unreachable after remove rewires the tree and clears leaves.
++        // Reinitialize it on reuse instead of clearing it only to write it again.
+         self.freeIds.push(id);
+     }
+ 
+--- a/src/libraries/AsyncMatching.sol
++++ b/src/libraries/AsyncMatching.sol
+@@ -14,6 +14,7 @@
+ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
+ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+ import {RadixPriceTree} from "@async-swap/libraries/RadixPriceTree.sol";
++import {EligiblePrice} from "@async-swap/libraries/EligiblePrice.sol";
+ 
+ /// @notice Linked matching module operating on the hook's order and radix-book storage.
+ /// @dev Public library calls use DELEGATECALL, so ERC-6909 escrow remains owned by Async Swap.
+@@ -160,8 +161,8 @@
+             if (makerId == bytes32(0)) break;
+             // Order the pair as (buy, sell) for the exact cross test regardless of incoming side.
+             bool crosses = incomingBuy
+-                ? _crosses(incoming.price, opposingPrice, self.orders[incomingId], self.orders[makerId])
+-                : _crosses(opposingPrice, incoming.price, self.orders[makerId], self.orders[incomingId]);
++                ? _crosses(incoming.price, opposingPrice, incoming, self.orders[makerId])
++                : _crosses(opposingPrice, incoming.price, self.orders[makerId], incoming);
+             if (!crosses) {
+                 if (incoming.price != opposingPrice) break;
+                 makerId = book.eligibleAtPrice(!incomingBuy, opposingPrice, AsyncFiller.exactPrice(incoming));
+@@ -205,10 +206,16 @@
+         if (_crosses(bidPrice, askPrice, self.orders[bidId], self.orders[askId])) return (bidId, askId);
+         // The only ambiguous boundary is a shared bucket. Maximize buy priority among
+         // buys crossing any ask, then sell priority conditional on that selected buy.
+-        bidId = book.eligibleAtPrice(true, bidPrice, book.mostPermissiveAtPrice(false, askPrice));
+-        if (bidId == bytes32(0)) return (bytes32(0), bytes32(0));
++        EligiblePrice.Ratio memory cheapestAsk = book.mostPermissiveAtPrice(false, askPrice);
++        // The head bid is already the highest priority. If it crosses any ask,
++        // retain it rather than traversing its priority tree a second time.
++        if (!EligiblePrice.le(cheapestAsk, AsyncFiller.exactPrice(self.orders[bidId]))) {
++            bidId = book.eligibleAtPrice(true, bidPrice, cheapestAsk);
++            if (bidId == bytes32(0)) return (bytes32(0), bytes32(0));
++        }
+         askId = book.eligibleAtPrice(false, askPrice, AsyncFiller.exactPrice(self.orders[bidId]));
+-        if (askId == bytes32(0)) return (bytes32(0), bytes32(0));
++        // A feasible bid has an eligible ask by the summary invariant. The
++        // match-pair guard also rejects an empty record before any settlement.
+     }
+ 
+     /// @notice Execute an order against active v4 LP positions if they meet the signed minimum.

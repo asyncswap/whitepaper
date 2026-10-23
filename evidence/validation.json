@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-23",
+  "status": "local uncommitted implementation; not deployed or pushed",
+  "whitepaper_base": "c057a2b9b0c8ecb6129db7509d5d22ea769c2f38",
+  "contracts_base": "e04668ecc6e0db96c9c2c17fdc8a7543c294c5f7",
+  "solidity_tests": {
+    "passed": 807,
+    "failed": 0,
+    "skipped": 1,
+    "skip_reason": "Unichain fork RPC unavailable"
+  },
+  "python_tests": {
+    "passed": 36,
+    "failed": 0
+  },
+  "lean_build": {
+    "jobs": 9193,
+    "success": true,
+    "scope": "Regenerated models and updated allocator/removal/insertion refinements; exact-index end-to-end refinement remains outstanding."
+  },
+  "runtime_bytes": {
+    "AsyncMatching": 24528,
+    "AsyncSwap": 22047,
+    "Router": 20510
+  },
+  "artifacts_sha256": {
+    "/Users/meek/developer/asyncswap/contracts/src/libraries/EligiblePrice.sol": "aa6b6c739440bdf4ee628b4dd4245db5af168e977380c4d30f1f30a23fd7ace7",
+    "/Users/meek/developer/asyncswap/contracts/test/EligiblePrice.t.sol": "014d6ae6c286a6cbd15f0212c1a2bfa71f249f966c7b6dd397852f99cf7dc2e8",
+    "/Users/meek/developer/asyncswap/contracts/test/security/EligiblePythonVectors.t.sol": "38f3581a9c411b2e2cf750a4fd41a8a2c68155e7833b95e5209e16f5ef6162ba",
+    "/Users/meek/developer/asyncswap/contracts/test/security/EligibleGas.t.sol": "5b3494f0e85a7c3c00040530ed36605b3530c9a373d001dd1d90b85c62c85f82",
+    "/Users/meek/developer/asyncswap/contracts/test/security/CoarsePriceBlocking.t.sol": "6aa7960248634b75bbcfe97c13da38909273f0399ec751ea94f3aec467a46678",
+    "/Users/meek/developer/mmsaki/uv4/examples/export_eligible_vectors.py": "5190d78bd537e14b29d2579749507ffa20f7647a1d51ea0a8b4124b1367aedc4",
+    "/Users/meek/developer/mmsaki/uv4/src/uv4/priority_protocol/model.py": "702685245966177dbdf3370c9294798e7474c3a050fc6a9fd185f2b170c53f34",
+    "/Users/meek/developer/mmsaki/uv4/tests/priority_protocol/test_eligibility.py": "dff1246ef799f9724d77fddc6349eb0527540fda0f19c93bebf656788c8a81df",
+    "/Users/meek/developer/asyncswap/contracts/test/security/EligibleRemainder.t.sol": "d9e9af876e44adf2d1c05bc80c688ab80dbbee29ee6bc66a202640dc5b1dfe42",
+    "/Users/meek/developer/mmsaki/uv4/examples/report_eligible_gas.py": "a76a5201a2f0a562093b485092310a819c3902b036b58fb92060047bad51bc0a",
+    "/Users/meek/developer/asyncswap/whitepaper/whitepaper.tex": "0a5aaa4c3a3d6856a08fc0fdc0157a7fc8c895543d01105dc8f7167c08867674",
+    "/Users/meek/developer/asyncswap/whitepaper/sections/eligible-matching.tex": "b772912d4f7cb186e87f3f9096e5687f138619ca0a3efdb7ac59c8ca98e09a2d",
+    "/Users/meek/developer/asyncswap/contracts/src/libraries/RadixPriceTree.sol": "b2a672b6629caf28aa30df3a727b9026ddf3271ca422623a284f459db525dc53",
+    "/Users/meek/developer/asyncswap/contracts/src/libraries/AsyncMatching.sol": "51c57408103519d6641e08fc72703c5831e0c768df496be1fde68e08d398dbaf",
+    "/Users/meek/developer/asyncswap/contracts/foundry.toml": "c5df9e3df6fa3fb2db72c4d6caa57061463d8783ab772b027e1871b104e537d5",
+    "/Users/meek/developer/mmsaki/uv4/examples/measure_matching_receipts.py": "38f2aa96f9c4b58362be18ae4d11a22c14ebdb884fd1298c685c9c5e63939717",
+    "/Users/meek/developer/mmsaki/uv4/examples/report_matching_receipts.py": "56fb6340b1eef7475dc9418dfdef9654ed8aae78c11dba57a5e6d733010c56de",
+    "/Users/meek/developer/asyncswap/whitepaper/sections/receipt-results.tex": "c2b4e07ed4f274e88d1e9f5a86f24b9e65ca1a6aafa6cf4ae0fae255c19eb546",
+    "/Users/meek/developer/asyncswap/whitepaper/evidence/matching-receipts.json": "0bab7f5a5b452ee4a784e30b0d904a0a677d2f09f8ea81f254187cf5cbf97341"
+  },
+  "compiler": {
+    "version": "0.8.26",
+    "optimizer_runs": 43690
+  },
+  "matching_runtime_headroom_bytes": 48,
+  "benchmark_scope": "Local standard ERC20/no-LP fixtures; 128 blockers for Router receipts. Both versions compiled with 43690 optimizer runs. Fixture PoolManager is rebuilt, not a verification of deployed chain bytecode.",
+  "validation_logs": {
+    "solidity": "/tmp/gas-final-tests.log",
+    "python": "/tmp/gas-python-validation.log",
+    "lean": "/tmp/gas-final-lean.log",
+    "gas": "/tmp/gas-43690-after.log"
+  }
+}

@@ -1,0 +1,87 @@
+\section{Priority among exactly eligible orders}
+
+\subsection{Price buckets and priority}
+
+Let $\sigma>0$ be a price scale and $K_{\max}$ the largest index key. The bucket of an exact
+base-unit price $p$ is
+\begin{equation}
+ K(p)=\min\{K_{\max},\max\{1,\lfloor\sigma p\rfloor\}\}.
+ \label{eq:bucket}
+\end{equation}
+This map is monotone. A bid bucket above an ask bucket therefore implies crossing; a bid
+bucket below an ask bucket excludes it. Equal keys require the exact comparison
+$Q_sA_b\le BS$. Index equality is not price equality.
+
+If the asset has $d_a$ decimals and USDC has $d_u$ decimals, the human-unit price is
+$P=p\,10^{d_a-d_u}$. An ordinary bucket has width
+\begin{equation}
+ \Delta=\frac{10^{d_a-d_u}}{\sigma}
+ \quad\text{USDC per whole asset}.
+\end{equation}
+For $\sigma=10^{18}$, an 18-decimal asset, and six-decimal USDC, $\Delta=10^{-6}$.
+For $K_{\max}>1$, bucket 1 covers $(0,2\Delta)$ and the top bucket covers
+$[K_{\max}\Delta,\infty)$, before finite amount restrictions. The ordinary width bound
+does not apply to these clamped buckets.
+
+Within a bucket, order $i$ has priority $r_i=(f_i,-s_i)$, compared lexicographically:
+a larger remaining bid $f_i$ ranks first, with earlier sequence $s_i$ breaking ties.
+This is priority within a price group, rather than strict exact-price priority inside that
+group. A bid affects rank only among orders compatible with the counterparty's limit.
+
+Consider two asks in one bucket with $p_1\le p_b<p_2$, where the ask at $p_2$ has higher
+priority. Inspecting only that ask misses the feasible trade at $p_1$. More generally,
+inspecting only the first $L$ orders can miss a feasible order behind $L$ incompatible
+ones. A finite inspection budget therefore requires an index of eligibility, not merely
+a priority queue.
+
+\subsection{Subtree summaries and selection}
+
+Within each price bucket, arrange priority keys in a compressed binary tree. The right
+subtree contains higher-priority keys. For every subtree $v$, maintain
+\begin{equation}
+ L(v)=\min_{i\in v}p_i\quad\text{for asks},\qquad
+ U(v)=\max_{i\in v}p_i\quad\text{for bids}.
+ \label{eq:summaries}
+\end{equation}
+An ask subtree contains an eligible order for a buyer at $p_b$ exactly when $L(v)\le p_b$;
+a bid subtree contains one for a seller at $p_s$ exactly when $U(v)\ge p_s$.
+Rational prices are compared by cross-products without rounding.
+
+If the root is eligible, descend to the right child whenever its summary is eligible,
+and otherwise to the left. The left child must then be eligible: the parent contains an
+eligible order and its right child contains none. Every accepted right subtree outranks
+the left subtree, so induction yields the highest-priority eligible leaf. No backtracking
+or linear scan is required. In a compressed tree of $w$-bit keys, branch positions strictly
+decrease along a path, giving at most $w$ branch decisions.
+
+Each insertion, removal, repricing, or partial fill updates the affected subtree summaries
+to preserve \eqref{eq:summaries}. Both searches and updates are bounded by the tree depth.
+
+\subsection{Selecting a pair}
+
+Selection is book-wide. An incoming order is first admitted to the book; the same rule then
+selects pairs from the whole book, so a new order and any crossed backlog compete under one
+priority order and share one bound on the number of pairs processed per call. Choose the highest bid bucket and
+the lowest ask bucket. When their
+keys are equal, let $\mathcal B$ and $\mathcal S$ be their orders and select
+\begin{align}
+ b^*&=\mathop{\mathrm{arg\,max}}_{b\in\mathcal B:\ p_b\ge\min_{s\in\mathcal S}p_s}r_b,\\
+ s^*&=\mathop{\mathrm{arg\,max}}_{s\in\mathcal S:\ p_s\le p_{b^*}}r_s.
+\end{align}
+This maximizes $(r_b,r_s)$ lexicographically over feasible pairs in the boundary bucket:
+buy priority first, then sell priority for the selected buy. When the best bid bucket is
+strictly above the best ask bucket, their priority heads cross. Checking two crossing
+heads directly gives the same result. An incompatible order remains open when skipped.
+
+\begin{proposition}[Selection progress]
+In a valid book containing a crossing pair, the selection rule finds a crossing pair,
+assuming exact subtree summaries and unique priority ranks.
+\end{proposition}
+\begin{proof}
+The highest bid key is at least the lowest ask key, by monotonicity of $K$.
+If the inequality is strict, the priority heads cross. If the keys are equal, any crossing
+pair must lie in those boundary buckets: a higher ask key or lower bid key cannot cross.
+The minimum ask summary therefore identifies a nonempty set of feasible buys. The
+priority search selects $b^*$ from that set, and a second search selects an ask crossing
+$b^*$. Both searches terminate within the index depth bound.
+\end{proof}
