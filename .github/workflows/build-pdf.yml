@@ -6,9 +6,9 @@ name: Build PDF
 on:
   push:
     branches: [dev]
-    paths: ["whitepaper.tex", "ref.bib", ".github/workflows/build-pdf.yml"]
+    paths: ["whitepaper.tex", "ref.bib", "sections/**", "figures/**", ".github/workflows/build-pdf.yml"]
   pull_request:
-    paths: ["whitepaper.tex", "ref.bib", ".github/workflows/build-pdf.yml"]
+    paths: ["whitepaper.tex", "ref.bib", "sections/**", "figures/**", ".github/workflows/build-pdf.yml"]
   workflow_dispatch:
 
 permissions:

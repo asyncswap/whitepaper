@@ -1,247 +1,254 @@
-\documentclass[bibliography=numbered]{article}
+\documentclass{article}
 \usepackage[utf8]{inputenc}
-\usepackage[a4paper, total={6in, 8in}]{geometry}
-\geometry{
- a4paper,
- total={6in,257mm},
- top=20mm,
- bottom=40mm
- }
+\usepackage[a4paper,textwidth=6in,top=20mm,bottom=25mm]{geometry}
 \usepackage{graphicx}
 \usepackage{parskip}
-\usepackage{amsmath}
-\usepackage{amsfonts}
+\usepackage{amsmath,amsfonts,amsthm}
 \usepackage{hyperref}
-\usepackage{multirow}
 \usepackage[section]{placeins}
-\hypersetup{
-    colorlinks=true,
-    linkcolor=blue,
-    filecolor=white,      
-    urlcolor=blue,
-    }
-
-\usepackage[backend=bibtex]{biblatex} %Imports biblatex package (bibtex backend: builds anywhere, no biber version coupling)
-\addbibresource{ref.bib} %Import the bibliography file
-
-\usepackage{caption}
-\usepackage{subcaption}
-
+\usepackage[backend=bibtex]{biblatex}
+\addbibresource{ref.bib}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
 \urlstyle{same}
-
-\title{Async Swap: Coincidence-of-Wants Matching on Uniswap v4 (WIP)}
-
-\author{
-  Msaki, Meek
-  \and
-  Li, Jiasun
-}
-
-\date{October 18, 2026}
+\newtheorem{proposition}{Proposition}
+\title{Async Swap: Coincidence-of-Wants Matching on Uniswap v4}
+\author{Msaki, Meek \and Li, Jiasun}
+\date{October 23, 2026}
 
 \begin{document}
-
 \maketitle
 
 \begin{abstract}
-Large swaps have no good home on-chain. A constant-product pool quotes a price that worsens with size, and the liquidity needed to absorb an institutional-size trade is rarely resident in one pool. We present Async Swap, a Uniswap v4 hook that turns an exact-input swap into a resting limit order with an on-chain order book and matching engine. A maker names an exact input and the minimum output it will accept; the input is escrowed in the PoolManager as ERC-6909 claims. The order then finds its counterparty asynchronously: it is matched against resting orders of the opposite side by coincidence of wants, tried against the pool's own liquidity when that satisfies the limit, and otherwise rests on the book until a later order crosses it, an independent filler settles it at the maker's price, or the maker cancels. The book is a Patricia radix tree of price levels in the hook's storage, so the best opposing price is found first; each pool chooses how same-price orders are sequenced, by arrival or by escrowed USDC priority bids that are donated to active liquidity providers as the order fills. Order-to-order matches carry no protocol fee. The escrow, conservation and priority properties of the design are machine-checked in Lean 4 and re-proved on every commit. The contracts are deployed as unaudited test deployments on Arc and Unichain ahead of an official launch.
+Async Swap is an on-chain limit-order protocol that separates the commitment to trade from
+execution. Makers escrow an input amount and specify a minimum output. Compatible orders
+exchange their escrows directly; unmatched amounts remain available to later counterparties,
+pool liquidity, or independent fillers. USDC provides a common unit of account. Price buckets
+organize the book, while exact rational limits determine which orders can trade. Escrowed
+priority bids rank eligible orders within each bucket. Subtree price summaries locate the
+highest-priority eligible order without scanning incompatible orders. We characterize feasible
+transfers, give integer settlement rules that preserve both makers' limits, and derive bounds
+on matching work. The design trades immediate execution for price control while keeping
+settlement atomic and the book's work per matching call bounded.
 \end{abstract}
 
-\section{Introduction}
+\section{The problem: price control and execution cost}
 
-Automated market makers price a trade by moving along a curve. For Uniswap v3 \cite{UniswapV3} and v4 \cite{UniswapV4} that curve is a constant product between concentrated liquidity positions, and the price a trader receives degrades continuously with the size of the trade. For a trade that is small relative to the liquidity in range this is a feature: the pool always quotes, and the cost of immediacy is a few basis points. For a trade that is large relative to that liquidity it is the whole problem. The quote moves against the trader, the depth is not there, and whatever is there is visible to searchers who can position around the trade before it lands.
-
-Off-chain venues solve this with time. A limit order rests at the price its owner chose until a counterparty arrives, and a block trade is negotiated rather than swept through a curve. On-chain, that pattern has mostly been imported as off-chain order flow with on-chain settlement: a signed intent is broadcast to solvers or fillers who compete to execute it, and the chain sees only the final trade. This works, but the order itself lives off-chain, in a relayer or a solver's inbox, and the trader depends on that infrastructure to be honest and available.
-
-Async Swap keeps the order on-chain. The core observation is that a Uniswap v4 hook can take an exact-input swap away from the pool: the \texttt{beforeSwap} callback can consume the whole input as a custom accounting delta, escrow it as claims held by the hook, and record an order instead of executing a swap. From that point the order is a first-class object in contract storage, with a price, a size, an owner, and an event history that anyone can index. What the hook does with that order is the subject of this paper.
-
-Our contributions are as follows.
-
-\begin{itemize}
-  \item An \emph{asynchronous limit order} on Uniswap v4: an exact-input swap whose input is escrowed and whose output is settled later, at or above a maker-chosen minimum, by whoever can meet it (Section~\ref{sec:orders}).
-  \item An \emph{on-chain order book}: a Patricia radix tree of price levels per pool that locates the best opposing price in storage, with a crossing rule that is exact at equal keys (Section~\ref{sec:book}).
-  \item \emph{Coincidence-of-wants matching}: an incoming order is settled against up to eight resting orders in one PoolManager unlock, swapping the two escrows directly with no protocol fee, with partial fills resting on the book and bounded continuation by anyone (Section~\ref{sec:matching}).
-  \item \emph{Application-specific sequencing}: each pool chooses FIFO or USDC priority bids to order same-price orders, where bids are escrowed at creation, non-refundable, and donated to the liquidity providers active when the order fills (Section~\ref{sec:sequencing}).
-  \item Two \emph{fallbacks} that keep the book liquid without a market maker: the pool's own liquidity, tried all-or-nothing against the remainder, and permissionless fillers who settle at the maker's live minimum plus a fee (Sections~\ref{sec:lp} and \ref{sec:fillers}).
-  \item A \emph{machine-checked specification} of the escrow, conservation, backing, price-time-priority and non-negativity properties, maintained against the source on every commit (Section~\ref{sec:proofs}).
-\end{itemize}
-
-The design is deployed as a test deployment on Arc and, in its original single-order form, on Unichain. It is not audited and not launched; Section~\ref{sec:status} says exactly what is live.
-
-\section{Background: Uniswap v4}
-
-Uniswap v4 \cite{UniswapV4} replaces per-pool contracts with a single \texttt{PoolManager} that holds all pools' reserves and settles every interaction inside an \texttt{unlock} callback. Within the callback a caller accumulates signed currency deltas by swapping, modifying liquidity, donating, or minting and burning ERC-6909 claims; the unlock succeeds only when every delta has been settled to zero by transferring tokens in or taking them out. Claims are the PoolManager's internal ledger: a balance of claim tokens is a right to withdraw that currency, and moving claims between addresses moves value without moving ERC-20 tokens.
-
-A pool may be initialised with a hook contract whose callbacks run before and after swaps, liquidity changes and donations. With the \emph{before-swap-returns-delta} permission, a hook's \texttt{beforeSwap} may return a custom delta that the PoolManager applies in place of, or in addition to, the pool's own swap. Returning a delta that consumes the entire exact input leaves nothing for the curve to swap: the pool's state is untouched, the caller owes the input, and the hook decides what the input was for. Async Swap is built on that permission. Pools using the hook are initialised with the dynamic-fee flag, which lets the hook set the LP fee per swap, and must contain the chain's configured USDC on one side.
-
-\section{Orders}
-\label{sec:orders}
-
-\subsection{Definition}
-
-An order is the tuple
-\[
-  \mathit{AsyncOrder} = (\mathit{key}, \mathit{owner}, \mathit{zeroForOne}, \mathit{amountIn}, \mathit{amountOutMin}, \mathit{priorityFee}, \mathit{sqrtPrice}, \mathit{salt})
-\]
-where \emph{key} is the Uniswap v4 pool key (the two currencies, the fee flag, the tick spacing and the hook), \emph{owner} is the maker, \emph{zeroForOne} is the direction, \emph{amountIn} is the exact input, \emph{amountOutMin} is the minimum output the maker accepts for that input, \emph{priorityFee} is the USDC bid discussed in Section~\ref{sec:sequencing}, \emph{sqrtPrice} is carried for the v4 swap call and otherwise unused, and \emph{salt} is a 32-byte value chosen by the maker. The order's identity is
-\[
-  \mathit{orderId} = \mathrm{keccak256}\big(\mathrm{abi.encode}(\mathit{chainId}, \mathit{poolId}, \mathit{owner}, \mathit{zeroForOne}, \mathit{salt})\big),
-\]
-so a maker knows its order id before sending the transaction. If the id is already in use the hook walks $\mathit{salt} \leftarrow \mathrm{keccak256}(\mathit{salt})$ to a free slot and reports the final salt in the creation event.
-
-The price of an order is the ratio of its two amounts. Because \emph{amountIn} is exact and \emph{amountOutMin} is a floor, an order is a commitment to trade the whole input at that ratio or better; it is never a market order, and it never trades at a worse price than its owner wrote down.
-
-\subsection{Creation and escrow}
-
-A maker creates an order through the Router, directly with \texttt{swap(order, userData)} or, for ERC-20 input, with \texttt{swapWithSig(order, permit, grant)}: an EIP-712 signature over a Permit2 witness that binds the maker, the two tokens, the input, the minimum, the bid and the pool, which a relayer may submit on the maker's behalf. Either way the Router opens an unlock, calls the PoolManager's \texttt{swap} with the exact input and the order as hook data, and the hook's \texttt{beforeSwap} does three things: it validates the order and the Router's authorization for this maker and pool, it mints the input amount as ERC-6909 claims to itself, and it adds the order to the pool's book. The returned delta consumes the whole input, so the pool's curve is never touched. The Router then settles the maker's input to the PoolManager, from the maker's wallet, from Permit2, or as forwarded ETH, and the unlock closes with every delta at zero. From this point the input is held by the PoolManager and claimed by the hook on the maker's behalf: the \emph{escrow}.
-
-Authorization is a separate, revocable grant. A maker names an \emph{executor} per pool, normally the Router, that may create, fill and cancel on its behalf; the grant can be given directly or by signature, and the first signed order on a pool may carry it. Executor authorization is orthogonal to any one order's lifecycle.
-
-\section{The order book}
-\label{sec:book}
-
-\subsection{Price keys}
-
-Every resting order is indexed on its pool's book by a 128-bit \emph{price key}, a truncated WAD ratio of its two amounts:
+Immediate execution consumes the liquidity available at the time of a trade. In a constant-product
+pool with asset reserve $X$ and quote reserve $Y$, selling $z$ asset units yields, before fees,
 \begin{equation}
-  k =
-  \begin{cases}
-    \left\lfloor \dfrac{\mathit{amountIn} \cdot 10^{18}}{\mathit{amountOutMin}} \right\rfloor & \text{buy side (the maker escrows the numeraire)} \\[2ex]
-    \left\lfloor \dfrac{\mathit{amountOutMin} \cdot 10^{18}}{\mathit{amountIn}} \right\rfloor & \text{sell side}
-  \end{cases}
+ Q(z)=\frac{Yz}{X+z},\qquad
+ \frac{Q(z)}{z}=\frac{Y}{X+z},\qquad
+ \frac{d}{dz}\frac{Q(z)}{z}=-\frac{Y}{(X+z)^2}.
 \end{equation}
-A ratio that rounds to zero maps to one, and a ratio above $2^{128}-1$ saturates. Keys order the tree; two orders with different exact prices can share a key, so keys alone do not decide whether two orders trade.
+The average execution price declines as trade size grows relative to available liquidity.
+Concentrated liquidity changes the depth available over each price range, but execution
+still depends on that depth~\cite{UniswapV3}. A maker willing to wait can instead state a
+limit and exchange with a compatible counterparty. Direct matching avoids consuming pool
+liquidity for the matched portion; it does not ensure that a counterparty will arrive.
 
-\subsection{A radix tree of price levels}
+An on-chain book must reconcile three requirements: respect exact limits, assign an explicit
+priority among competing orders, and bound the work needed to find a match. Grouping nearby
+prices makes indexing practical, but a high-priority order in a group may be incompatible
+with a counterparty that can trade with another order in the same group. Async Swap separates
+\emph{price grouping}, \emph{eligibility}, and \emph{priority} so that grouping cannot create
+this obstruction.
 
-The book is a Patricia radix tree over price keys, held in the hook's storage, with one level per distinct key and a doubly linked list of orders at each level. The tree answers the only question matching needs, \emph{what is the best opposing price}, in a bounded number of storage reads, and inserting or removing a level does not touch the others. Node identifiers are 32-bit and recycled through a free list when a level empties, so the identifier counter tracks the peak number of simultaneously stored prices rather than the number of prices ever seen.
+\section{Orders and feasible exchange}
 
-\subsection{Crossing}
+Each market pairs an asset with USDC. An order specifies its owner, side, remaining input,
+minimum output for that input, escrowed priority bid, and arrival sequence. The input and bid
+are reserved when the order is admitted. Minimum outputs are positive. A limit applies
+proportionally to each partial fill; any unspent input remains reserved or is returned to
+the maker when the order closes.
 
-A buy with key $k_b$ and a sell with key $k_s$ cross when the buyer is willing to pay at least what the seller asks. Since truncation is monotone, $k_b > k_s$ is a cross and $k_b < k_s$ is not. Equal keys are decided at full precision:
+Let a seller offer $S>0$ asset units for at least $Q_s>0$ USDC units. Let a buyer offer
+$B>0$ USDC units for at least $A_b>0$ asset units. Amounts are measured in integer token
+base units unless stated otherwise. Their exact limits, in USDC base units per asset base
+unit, are
 \begin{equation}
-  \text{cross} \iff \frac{\mathit{buyIn}}{\mathit{buyOut}} \ge \frac{\mathit{sellOut}}{\mathit{sellIn}} \iff \left\lfloor \frac{\mathit{buyIn} \cdot \mathit{sellIn}}{\mathit{sellOut}} \right\rfloor \ge \mathit{buyOut},
+ p_s=\frac{Q_s}{S},\qquad p_b=\frac{B}{A_b}.
 \end{equation}
-implemented with a full-width multiply-divide. An exact tie counts as a cross. Minimums are never zero, so the divisor is never zero, and at equal keys the quotient is on the order of \emph{buyOut}, so the division cannot overflow for escrowable amounts. Every genuine cross, including the tie, produces a non-zero match that pays each maker at least its signed minimum for the input consumed; this was checked exhaustively for small amounts and on randomised near-tie pairs.
-
-\section{Matching by coincidence of wants}
-\label{sec:matching}
-
-When a new order is created, the Router calls the hook's \texttt{matchNewOrder} in the same unlock. The matching library reads the best opposing level from the tree and, while the incoming order crosses it, settles the pair: it computes the amounts each side gives and receives at a price that satisfies both minimums, burns the corresponding escrow claims, and transfers the tokens to the two makers. ERC-20 proceeds are transferred directly; native proceeds are minted as PoolManager claims that the recipient redeems, so a recipient that rejects ETH can never block a match. A match swaps the two escrowed inputs with no protocol fee, so rounding can never move value to or from the protocol.
-
-Matching is bounded to eight pairs per transaction, which keeps the gas of creating an order predictable regardless of how deep the opposing side is. If the incoming order is still open after eight matches, or if an equal-key pair that does not cross stops the walk, the order rests with its remainder and anyone may call \texttt{Router.matchBook(key, n)}, $1 \le n \le 8$, to continue. Partial fills stay on the book with their remaining input and remaining minimum; input left over after a maker's minimum has been met is returned to that maker.
-
-Within a level, orders are matched in \emph{sequence}, the ordering defined in Section~\ref{sec:sequencing}. A reprice, or a partial fill that changes an order's price key, re-enters the order at the back of its new level with a fresh sequence number, so no order can jump a queue by editing itself.
-
-\section{Application-specific sequencing}
-\label{sec:sequencing}
-
-Price-time priority is the convention of every central limit order book: better price first, earlier arrival first at the same price. On a blockchain, ``earlier'' is decided by whoever builds the block, and the right to be first at a price is sold on a market the application does not control. Async Swap lets each pool decide how same-price orders are sequenced, and gives it a way to sell that right itself.
-
-Every pool has an \emph{ordering mode}. In \textbf{FIFO} mode, orders at one price match in the order they were sequenced, and \emph{priorityFee} must be zero. In \textbf{priority-bid} mode, every order carries a USDC bid of at least $0.10$ USDC ($10^5$ units of six-decimal USDC); a larger remaining bid matches first at the same price, and equal bids fall back to sequence. Both modes are expressed by one sort key per order,
+A transfer of $x$ asset units and $q$ USDC units is feasible when
 \begin{equation}
-  \mathit{priorityKey} = (\mathit{bid} \ll 64) \,|\, (2^{64} - 1 - \mathit{sequence}),
+ \mathcal F=\{(x,q):0<x\le S,\;0<q\le B,\;p_sx\le q\le p_bx\}.
+ \label{eq:feasible}
 \end{equation}
-so the highest bid and, within it, the lowest sequence number sorts first.
-
-A bid is escrowed as PoolManager claims in the same unlock that creates the order. It is \emph{non-refundable}. As the order's input is consumed by a match, a proportional share
+Ignoring indivisibility for the moment, $\mathcal F$ is nonempty exactly when
 \begin{equation}
-  \mathit{settled} = \left\lfloor \frac{\mathit{remainingBid} \cdot \mathit{inputUsed}}{\mathit{remainingInputBeforeFill}} \right\rfloor
+ p_s\le p_b\quad\Longleftrightarrow\quad Q_sA_b\le BS.
+ \label{eq:cross}
 \end{equation}
-is settled, and when the order terminates, by a full fill, a cancellation or a fill from pool liquidity, the residual bid is settled too. A settled bid is donated through \texttt{PoolManager.donate} to the liquidity positions in range at the current tick, in the same unlock as the order operation, and goes to the protocol FeeVault when the pool has no active liquidity. A partial fill can leave a bid below the creation minimum; its remaining bid determines its new rank. Repricing assigns fresh time priority without refunding the bid.
-
-Two things a bid does \emph{not} do deserve emphasis. It does not buy inclusion in a block or a position within one: builders order transactions as they always have, and a bid only orders matching inside this book once the transaction runs. And it does not guarantee execution: an order with the highest bid at a price still waits for a crossing counterparty. What the bid buys is the first claim on the next coincidence of wants at that price, and the payment goes to the liquidity providers who keep the pool quoting rather than to the block builder.
-
-\section{Pool liquidity as fallback}
-\label{sec:lp}
-
-Pools using the hook can hold ordinary Uniswap v4 liquidity positions. After order-to-order matching, the hook tries an incoming order's remainder against that liquidity through an external self-call that performs a pool swap for the remaining exact input with the LP fee temporarily set to 30 basis points. The attempt succeeds only if the pool consumes the whole remaining input and returns at least the order's remaining minimum output; otherwise the self-call reverts and the surrounding transaction catches it, so only the liquidity attempt rolls back and the prior book matches and the open remainder survive. Because the swap originates from the hook, the hook's own callbacks are skipped and no second order is created. Anyone may retry a resting order against pool liquidity with \texttt{Router.fillFromPoolLiquidity(order)} after the pool price or liquidity moves; a retry does not require the order to be first in the book. These fills pay the 30 basis point fee to active positions; liquidity providers bear the usual inventory and price risk.
-
-\section{Fillers}
-\label{sec:fillers}
-
-What the book and the pool cannot match can be settled by anyone. A filler calls the Router's \texttt{fillOrder} with the order, a price cap and the recipient, funds the output in the same unlock, and receives the order's full remaining input. The maker's minimum is net: the filler pays gross output
+At an execution price $p\in[p_s,p_b]$, the largest continuous transfer at that price is
 \begin{equation}
-  \mathit{gross} = \mathit{amountOutMin} + \mathrm{calculatePoolFee}(\mathit{amountOutMin}), \qquad
-  \mathrm{calculatePoolFee}(n) = \left\lfloor \frac{3n}{997} \right\rfloor,
+ x(p)=\min\{S,B/p\},\qquad q(p)=p\,x(p).
+ \label{eq:frontier}
 \end{equation}
-which is $0.3\%$ of gross, rounded down; the maker receives exactly its minimum, the FeeVault receives the fee as claims, and the filler receives the escrowed input. The \emph{maxPrice} argument caps what the filler will pay, so a reprice between the filler's quote and its transaction reverts rather than overpays. A fill is all-or-nothing on the order's remainder; partial fills happen only through book matching. A fill requires an authorized executor, normally the Router, and like every other transition it reverts cleanly: a failed fill leaves the order open and the accounting untouched.
+Thus the maximum asset transfer is $\min\{S,B/p_s\}$, attained at the seller's limit;
+the maximum USDC transfer is $\min\{B,Sp_b\}$, attained at the buyer's limit. These are
+pairwise bounds, not a claim that one allocation maximizes welfare or future trading volume.
 
-A filler is any address with the output token and a reason to want the input: a market maker running inventory, a solver routing the output through another venue, an arbitrage bot, or an AI agent reading the public order feed. The spread between the maker's limit and the market is the filler's reward; the protocol routes nothing on the filler's behalf.
+For example, using whole-token units, take $S=2$, $Q_s=2000$, $B=1650$, and $A_b=1.5$.
+The acceptable interval is $[1000,1100]$ USDC per asset. At the seller's limit the pair
+exchanges $1.65$ assets for $1650$ USDC; at the buyer's limit it exchanges $1.5$ assets for
+the same USDC amount. The intersections of the two limit lines with $q=B$ determine these
+quantities. Priority fees are separate from the exchange amounts.
 
-\section{Repricing and cancellation}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/matching-limits.png}
+\caption{Left: feasible transfers and binding limits, in whole-token units.
+Right: distinct exact prices within one price bucket.}
+\end{figure}
 
-A maker may \emph{reprice} an open order, replacing its minimum output with any nonzero value, directly or by an EIP-712 signature against the hook's domain. The order keeps its escrow and its id, and re-enters the book at the back of its new level. A maker, or its authorized executor, may \emph{cancel} an open order, directly or by signature against the Router's domain: the remaining input is returned in full, the residual bid is settled, and the record is deleted. Cancellation carries no fee.
+\input{sections/eligible-matching}
 
-Fill and cancel delete the order record; their outcomes survive as events. An indexer turns the creation, price-update, match, fill and cancel events into a lifecycle feed, but the contracts neither require nor trust it: the only authoritative view of an order is the hook's storage.
+\section{Integer settlement and remaining orders}
 
-\section{Fees}
+The order created earlier in the selected pair is the maker and determines the reference
+price. Creation order is fixed when an order is admitted: repricing and partial fills may
+change an order's queue sequence, but not which of two orders was created first. When the
+seller is earlier, settle
+\begin{equation}
+ x=\min\{S,\lfloor BS/Q_s\rfloor\},\qquad q=\lceil xQ_s/S\rceil.
+ \label{eq:seller}
+\end{equation}
+When the buyer is earlier, settle
+\begin{equation}
+ q=\min\{B,\lfloor SB/A_b\rfloor\},\qquad x=\lceil qA_b/B\rceil.
+ \label{eq:buyer}
+\end{equation}
+The ceiling protects the earlier order's minimum. The following result establishes that
+the other order's minimum is also respected.
 
-\begin{center}
-\begin{tabular}{l l l}
-\hline
-Event & Fee & Paid to \\
-\hline
-Order-to-order match & none & -- \\
-Fill from pool liquidity & 30 bps LP fee & active v4 positions \\
-Filler fill & 0.3\% of gross output & protocol FeeVault \\
-Priority bid (priority pools) & $\ge 0.10$ USDC, non-refundable & active LPs, else FeeVault \\
-Creation, reprice & none & -- \\
-Cancellation & none; input returned & -- \\
-\hline
-\end{tabular}
-\end{center}
+\begin{proposition}[Positive feasible settlement]
+For positive integer order amounts satisfying \eqref{eq:cross}, either settlement rule
+produces positive integers $x,q$ satisfying \eqref{eq:feasible}.
+\end{proposition}
+\begin{proof}
+For \eqref{eq:seller}, if $x=S$, then $q=Q_s\le B$, and crossing gives
+$xB=SB\ge Q_sA_b=qA_b$. Otherwise $x=\lfloor BS/Q_s\rfloor<S$.
+Crossing implies $x\ge A_b\ge1$, while $q=\lceil xQ_s/S\rceil\le B$.
+Hence $xB\ge A_bB\ge A_bq$. In both cases the ceiling gives $qS\ge xQ_s$.
+For \eqref{eq:buyer}, if $q=B$, then $x=A_b\le S$ and crossing gives
+$qS\ge xQ_s$. Otherwise $q=\lfloor SB/A_b\rfloor\ge Q_s\ge1$ and
+$x=\lceil qA_b/B\rceil\le S$, so $qS\ge Q_sS\ge Q_sx$.
+The ceiling gives $xB\ge qA_b$ in either case.
+\end{proof}
 
-\section{Properties and verification}
-\label{sec:proofs}
+For either side, write $I$ for its input before a fill, $O$ for its minimum output, and
+$u$ for the input consumed. A surviving remainder has
+\begin{equation}
+ I'=I-u,\qquad O'=\left\lceil\frac{OI'}{I}\right\rceil.
+ \label{eq:remainder}
+\end{equation}
+When $I'>0$, $O'/I'\ge O/I$: the remainder never asks for a worse exchange rate.
+Price improvement on a completed fill does not reduce the remaining limit. Rounding can
+change the exact ratio even when its bucket stays the same, so the eligibility summaries
+must be refreshed after every partial fill.
 
-The protocol has a Lean 4 \cite{Lean4} and Mathlib specification that models the hook, the Router, the PoolManager's accounting (per-locker deltas that must net to zero, ERC-6909 claims, settle, take, mint, burn, and the before-swap delta), the price tree, the native-ETH claim ledger and the EIP-712 and Permit2 hashing. Every theorem is machine checked with no \texttt{sorry} and no additional axioms, and a swarm of agents re-pins the specification to the source and re-proves it on every protocol commit, opening a pull request to the proofs repository only when the build is clean. Properties proved against the current source include:
+A remainder below the market's minimum admitted notional closes and its unused input is
+returned. For a buy, this notional is its remaining USDC input; for a sell, its remaining
+minimum USDC output. A maker may cancel an open remainder or replace its minimum with a
+new positive amount. Repricing assigns a fresh arrival sequence, as does a partial fill
+that changes the price bucket. A partial fill otherwise retains its sequence; its remaining
+bid determines fee priority. The arrival sequence governs queue priority only; the maker
+role in a later match still follows creation order.
 
-\begin{itemize}
-  \item \textbf{Escrow.} The hook's claim balances equal the sum of open orders' remaining inputs plus escrowed bids, after every entry point.
-  \item \textbf{Backing.} The PoolManager's token balance equals claim supply plus pool reserves.
-  \item \textbf{Conservation.} Per-currency totals over all ledgers are preserved by every entry point; no match, fill or cancel creates or destroys tokens.
-  \item \textbf{Price-time priority.} The level matched is the best price; within a level the order with the higher bid matches first and equal bids match in sequence; a reprice re-enters last.
-  \item \textbf{Non-negativity.} Claim balances, and wallet balances outside the PoolManager, never go negative.
-  \item \textbf{Bounds.} Stated input bounds under which no intermediate exceeds $2^{256}$, and under which 32-bit node identifiers cannot be exhausted without $2^{31}$ price levels stored at once.
-  \item \textbf{Signature binding.} A Permit2 witness commits to exactly the listed fields, so a signed order cannot be replayed with a different direction, size, minimum or pool.
-\end{itemize}
+\section{Escrow, fees, and alternative counterparties}
 
-The specification work has found contract bugs as well as proved properties. A rebuild of the protocol from the proofs alone, run against the source, found that a FIFO reprice left a stale \texttt{next} pointer in the price-level list, which could make a crossed book unmatchable; node identifiers were never recycled, so a tree would eventually refuse new levels; and the price-key computation could revert for inputs above roughly $10^{58}$ units. The first two are fixed; the third is stated as an input bound. Alongside the proofs, the source carries a Foundry suite of 144 tests including stateful invariant tests over outstanding escrow, asset conservation and best-price selection, and fork tests against Unichain mainnet state.
+Uniswap v4 provides a shared settlement layer and hook-based custom accounting, allowing
+order settlement to coexist with pool liquidity~\cite{UniswapV4}. Async Swap uses this layer
+to reserve assets and settle an exchange atomically. For each currency $c$, let $E_c$ denote
+assets reserved for orders and let $I_{i,c}$ denote order $i$'s remaining input in that currency.
+The order-escrow accounting condition is
+\begin{equation}
+ E_c=\sum_{i\in\mathcal O}I_{i,c}
+       +\mathbf 1_{\{c=\mathrm{USDC}\}}\sum_{i\in\mathcal O}f_i,
+ \label{eq:escrow}
+\end{equation}
+where $\mathcal O$ is the set of open orders and $f_i$ their remaining priority bids.
+A transition reduces reserved balances only by the corresponding proceeds, refunds, or
+settled fees. Each currency is conserved separately. Failed settlement leaves the exchange
+uncommitted; amounts cannot be released twice. An owner or an explicitly authorized party
+controls order changes and cancellation.
 
-\section{Security considerations}
+Reserved amounts are held as Uniswap v4 claims rather than token balances. A match pays
+both sides, and refunds any remainder closed below the minimum, by moving these claims to
+the recipients; no token transfer occurs during matching, so matching runs no token or
+recipient code. A recipient redeems claims for the underlying tokens through a separate
+redemption contract. A filler or pool-liquidity fill pays a token output directly, after
+the order is closed; native-currency output is credited as claims.
 
-\textbf{Orders are public.} Every order is visible in contract storage and in events before it is filled. A maker that would be harmed by that visibility should not post; private orders are future work (Section~\ref{sec:future}).
+Direct order matching has no additional exchange fee. If a fill consumes $u$ of input $I$,
+the settled portion of a remaining priority bid $f$ is
+\begin{equation}
+ d=\left\lfloor\frac{fu}{I}\right\rfloor,\qquad f'=f-d.
+\end{equation}
+Any residual bid is settled when the order closes, including cancellation. Priority bids
+are therefore non-refundable. Every settled bid goes to the protocol fee reserve; none
+accrues to liquidity providers.
 
-\textbf{Bids and block builders.} A priority bid orders matching inside the book; it does not interact with transaction ordering. A builder can still sequence two creating transactions as it pleases, and the one that runs first matches first. What the bid removes is the incentive to pay the builder for that position: a maker that wants the next coincidence of wants at a price pays the pool's liquidity providers instead, and the payment is visible and bounded.
+An unmatched remainder has two additional execution routes. It may trade against pool
+liquidity if the entire remaining input can produce at least its minimum output after the
+pool fee. Alternatively, an independent filler supplies that minimum output and receives
+the remaining escrowed input. The latter route settles the full remainder, with the maker's
+minimum $O$ defined net of the filler settlement fee:
+\begin{equation}
+ \Phi(O)=\left\lfloor\frac{3O}{997}\right\rfloor,\qquad
+ \text{filler payment}=O+\Phi(O).
+\end{equation}
+The fee is approximately $0.3\%$ of the gross payment, subject to base-unit rounding.
+A filler can impose a payment cap. Whether a fill is worthwhile depends on external prices,
+fees, and execution costs; the maker's limit alone does not imply filler profit.
 
-\textbf{Races.} Two fillers competing for one order, or a filler and a crossing order, are resolved by whichever transaction runs first; the loser reverts with its funds untouched. The \emph{maxPrice} cap and the all-or-nothing fill protect a filler from paying more than it quoted.
+\section{Bounded work and parameter selection}
 
-\textbf{Identity.} Order ids bind the chain, pool, owner, direction and salt. Because fill and cancel delete the record, an id can in principle be reused by a later order with the same salt; the maker chooses the salt, and the hook walks to a free one, so reuse requires the maker's own cooperation. Legacy deployments derive ids differently and must not be recomputed with the current formula.
+Let $w$ be the width of the binary index keys and $M$ the maximum number of pairs processed
+in one matching call. Each pair requires a constant number of searches and updates, each
+of depth at most $w$. The book's work is therefore $O(Mw)$, independent of the number of
+ineligible orders in a bucket. With $w=128$, each traversal has at most 128 branches.
+This bounds index work; a numerical transaction-cost bound also requires bounds on token
+transfers and other settlement operations.
 
-\textbf{Status.} The contracts are not audited. They are deployed for testing and bug discovery, and nothing in this paper is an invitation to trade size on them.
+To relate throughput and cost, suppose a specified workload admits an affine cost envelope
+$G(m)\le g_0+gm$, with fixed entry cost $g_0\ge0$ and per-pair bound $g>0$.
+For budget $G_{\mathrm{budget}}\ge g_0$, the largest batch certified by this envelope is
+\begin{equation}
+ M^*=\min\left\{M_{\max},\left\lfloor\frac{G_{\mathrm{budget}}-g_0}{g}\right\rfloor\right\}.
+ \label{eq:budget}
+\end{equation}
+It bounds permitted work, not the number of counterparties available. For the affine model,
+total cost increases with $m$, while cost per pair satisfies
+\begin{equation}
+ \overline G(m)=g+\frac{g_0}{m},\qquad
+ \frac{d\overline G}{dm}=-\frac{g_0}{m^2},\quad m>0.
+\end{equation}
+Smaller batches reduce total transaction cost; larger batches amortize entry cost. There
+is no batch size that simultaneously minimizes total gas and maximizes matches without a
+budget or another explicit tradeoff. A bound per call also does not bound the cost of a
+transaction that composes several calls.
 
-\section{Related work}
+Price resolution controls grouping, not the validity of a trade. Making buckets narrower
+cannot replace exact eligibility. Similarly, a minimum order size or bid floor can influence
+the cost of occupying the book, but cannot create a crossing counterparty. The bid floor is parameterized by $f_{\min}(N)=\min\{f_{\mathrm{cap}},\lfloor\beta N\rfloor\}$, where $N$ is the
+order's USDC notional. The choices $f_{\mathrm{cap}}=100000$ base units and $\beta=10^{-3}$
+correspond to the smaller of $0.10$ USDC and $0.1\%$ of notional. These economic parameters
+require calibration to order sizes and execution costs; the matching conditions do not
+identify an economically optimal fee.
 
-CoW Protocol \cite{CoWProtocol} popularised coincidence-of-wants settlement on-chain, with signed intents collected off-chain and settled in batches by competing solvers. Async Swap keeps the order and the matching on-chain, trades continuously rather than in batches, and needs no solver for a match to happen. UniswapX \cite{UniswapX} settles signed intents through a Dutch auction among fillers; its orders are off-chain until filled, and price discovery happens in the auction rather than on a book. Async Swap's fillers play a similar role for the remainder the book cannot match, but at a price the maker fixed rather than a decaying one. On-chain order books on general-purpose chains have historically been considered too expensive to maintain; the radix-tree design, the bounded matching and the reuse of the PoolManager's claim ledger as the escrow are what make this one fit inside a hook.
+\section{Scope of the guarantees}
 
-\section{Deployment status}
-\label{sec:status}
+Exact limits and correct index summaries ensure that an incompatible priority head cannot
+hide a feasible pair. They do not ensure an eventual fill for every order: compatible orders
+may never arrive, higher-priority arrivals may continue, and execution requires someone to
+submit a transaction. Priority bids rank orders inside the book; transaction inclusion and
+ordering remain outside that ranking. Orders are public, so their limits and sizes reveal
+trading intent.
 
-The protocol described here is deployed on Arc (chain id 5042) as a test deployment with book matching, priority bids, partial fills and the pool-liquidity fallback. The original single-order protocol, in which an order rests until a filler settles it in full and there is no book matching, is deployed on Unichain (chain id 130) and remains readable, fillable and cancellable but closed to new orders. Ethereum mainnet has no deployment. Addresses and fees should be read from the contracts and from the application's published machine-readable documents rather than from this paper, as test deployments may be replaced before launch. A mainnet deployment is blocked pending security review.
-
-\section{Future work}
-\label{sec:future}
-
-\begin{itemize}
-  \item \textbf{Agent accounts.} Explicit wallet authorization, bounded spend, key isolation, revocation and audit for AI agents acting as makers and fillers; the prerequisite for everything below.
-  \item \textbf{Agent-to-agent fills.} Agents filling each other's orders directly, including negotiated fills, through an agent-to-agent endpoint.
-  \item \textbf{Private orders and peer-to-peer settlement.} Orders visible only to chosen counterparties, and direct transfers of tokens and orders between parties settled through the protocol.
-  \item \textbf{Multi-hop with USDC accounting.} Orders that route through several pools with each hop valued in USDC up to the final token.
-  \item \textbf{Any-token pairs.} Lifting the requirement that one side of every pool is USDC.
-  \item \textbf{Audit and launch.} Security review of the matching and settlement architecture, then the official deployment.
-\end{itemize}
+USDC provides a common numeraire for comparing asset values. Equal USDC reference values do
+not imply equal token quantities or equal net proceeds after fees and execution costs.
+The model describes settlement within one market; a common numeraire alone does not provide
+atomic settlement across chains.
 
 \printbibliography
-
 \end{document}

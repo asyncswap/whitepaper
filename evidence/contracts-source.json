@@ -1,0 +1,22 @@
+{
+  "description": "Local exact-eligibility priority-only source snapshot with gas optimizations; hashes identify tested files, not a proof of equivalence.",
+  "git_head": "e04668ecc6e0db96c9c2c17fdc8a7543c294c5f7",
+  "source_has_uncommitted_changes": true,
+  "sha256": {
+    "src/AsyncSwap.sol": "a41b6efac96ed6824f56a0ee06a138d7dd15f01299195f671988e9249b69a265",
+    "src/BaseHook.sol": "e910e8e809f50335b1bd0da2109e417ae87213b517c0d1d8720e3bf0a1259ab9",
+    "src/FeeVault.sol": "7f8ccecc58e131b4b0712ec0721ae7042400ed7073af4017cfad08f2aa9e4bda",
+    "src/ImmutableState.sol": "81780a696bbff93efda8c21052c04b2b98cc97fb0af5ca7c23d30a37adcbfb8e",
+    "src/MatchingEngine.sol": "e6e63450d77a1af80c075eb34d113604734e35d75985b94ab177d58f6d603ddd",
+    "src/NativeClaims.sol": "b02920e5ddb1d06c862a16cf1b4f740e37d23d14159f960e7a5196833e976d7d",
+    "src/Router.sol": "b2033724c08cbdefd6cd3398d28cfc6f8faaab80dd24af8d7fec79263f79d756",
+    "src/interfaces/ISignatureTransfer.sol": "fdd4edd4221ad8df5968da0d0f8aed1127e9bfe56bcb1c8cb77ea7e66875f54b",
+    "src/libraries/AsyncFiller.sol": "51d23949053f6f925ef0f3a9f008e7d07167f22ed8fb69f53d1d0e1b8f97e26d",
+    "src/libraries/AsyncMatching.sol": "51c57408103519d6641e08fc72703c5831e0c768df496be1fde68e08d398dbaf",
+    "src/libraries/CurrencySettler.sol": "35fa91cd314c39fa825192ab2ceae2561ce14ff6b57a9be09fe4b1c3d652340d",
+    "src/libraries/EligiblePrice.sol": "aa6b6c739440bdf4ee628b4dd4245db5af168e977380c4d30f1f30a23fd7ace7",
+    "src/libraries/OrderSignatures.sol": "8b3e9e132eadf3c88f7f534613d3607fa5575c9bccd6d1b2b0caf9d774d0d335",
+    "src/libraries/RadixPriceTree.sol": "b2a672b6629caf28aa30df3a727b9026ddf3271ca422623a284f459db525dc53",
+    "src/types/AsyncOrder.sol": "d032eb2345957252b5d271e8fa6bab91c6ef8635d7c3fb075ad801b8c43a9973"
+  }
+}
